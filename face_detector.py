@@ -1,8 +1,15 @@
 # сюда пишет Маша
+"""
+Модуль обнаружения лиц для проекта face-recognition-app
+Автор: Участник 2
+Функции: Обнаружение лиц, рисование прямоугольников, подготовка данных для распознавания
+"""
+
 import cv2
 import numpy as np
 import time
-from typing import List, Tuple, Optional
+from typing import List, Tuple, Optional, Dict
+import os
 
 class FaceDetector:
     """
@@ -26,26 +33,35 @@ class FaceDetector:
         self.frame_count = 0
         self.start_time = time.time()
         
-        # Параметры для участника 3
+        # Данные для других модулей
         self.face_regions = []  # Список текущих областей лиц
-        self.face_images = []   # Список изображений лиц (для передачи участнику 3)
+        self.face_images = []   # Список изображений лиц
+        self.last_detection_time = 0
         
         print("✅ Детектор лиц инициализирован")
     
     def _load_cascade(self):
         """Загрузка каскада Хаара для обнаружения лиц"""
-        if self.cascade_path:
-            cascade = cv2.CascadeClassifier(self.cascade_path)
-        else:
-            # Используем встроенный каскад OpenCV
-            cascade = cv2.CascadeClassifier(
-                cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
-            )
-        
-        if cascade.empty():
-            raise ValueError("❌ Не удалось загрузить каскад Хаара. Проверьте путь к файлу.")
-        
-        return cascade
+        try:
+            if self.cascade_path and os.path.exists(self.cascade_path):
+                cascade = cv2.CascadeClassifier(self.cascade_path)
+            else:
+                # Используем встроенный каскад OpenCV
+                cascade = cv2.CascadeClassifier(
+                    cv2.data.haarcascades + 'haarcascade_frontalface_default.xml'
+                )
+            
+            if cascade.empty():
+                # Альтернативный путь
+                cascade = cv2.CascadeClassifier('haarcascade_frontalface_default.xml')
+                if cascade.empty():
+                    raise ValueError("Не удалось загрузить каскад Хаара")
+            
+            return cascade
+        except Exception as e:
+            print(f"⚠️ Ошибка загрузки каскада: {e}")
+            print("Скачайте файл с: https://github.com/opencv/opencv/tree/master/data/haarcascades")
+            raise
     
     def detect_faces(self, frame: np.ndarray) -> List[Tuple[int, int, int, int]]:
         """
@@ -66,19 +82,18 @@ class FaceDetector:
         # Обнаружение лиц
         faces = self.face_cascade.detectMultiScale(
             gray,
-            scaleFactor=1.1,      # На сколько уменьшаем изображение
-            minNeighbors=5,       # Минимальное количество соседей
-            minSize=(40, 40),     # Минимальный размер лица
+            scaleFactor=1.1,
+            minNeighbors=5,
+            minSize=(40, 40),
             flags=cv2.CASCADE_SCALE_IMAGE
         )
         
-        # Сохраняем информацию для участника 3
+        # Сохраняем информацию для других модулей
         self.face_regions = faces.tolist() if len(faces) > 0 else []
         self.face_images = []
         
-        # Извлекаем изображения лиц
+        # Извлекаем изображения лиц с отступами
         for (x, y, w, h) in self.face_regions:
-            # Добавляем небольшой отступ
             padding = 20
             x1 = max(0, x - padding)
             y1 = max(0, y - padding)
@@ -87,21 +102,28 @@ class FaceDetector:
             
             face_img = frame[y1:y2, x1:x2]
             if face_img.size > 0:
-                self.face_images.append(face_img)
+                # Приводим к стандартному размеру для распознавания
+                standard_size = (160, 160)
+                face_img_resized = cv2.resize(face_img, standard_size)
+                self.face_images.append(face_img_resized)
         
         # Обновляем статистику
         self.total_faces_detected += len(faces)
         self.frame_count += 1
+        self.last_detection_time = time.time()
         
         return faces
     
-    def draw_faces(self, frame: np.ndarray, faces: List[Tuple]) -> np.ndarray:
+    def draw_faces(self, frame: np.ndarray, faces: List[Tuple], 
+                   names: List[str] = None, confidence: List[float] = None) -> np.ndarray:
         """
-        Рисование прямоугольников вокруг лиц
+        Рисование прямоугольников вокруг лиц с возможностью добавления имен
         
         Args:
             frame: Исходный кадр
             faces: Список прямоугольников лиц
+            names: Список имен для каждого лица (опционально)
+            confidence: Список уверенностей распознавания (опционально)
             
         Returns:
             Кадр с нарисованными прямоугольниками
@@ -109,22 +131,72 @@ class FaceDetector:
         frame_copy = frame.copy()
         
         for i, (x, y, w, h) in enumerate(faces):
-            # Рисуем зеленый прямоугольник
-            color = (0, 255, 0)  # Зеленый (BGR)
+            # Выбираем цвет в зависимости от имени
+            if names and i < len(names):
+                if names[i] == "Unknown" or names[i] == "Неизвестный":
+                    color = (0, 0, 255)  # Красный для неизвестных
+                else:
+                    color = (0, 255, 0)  # Зеленый для известных
+            else:
+                color = (0, 255, 0)  # Зеленый по умолчанию
+            
             thickness = 2
             
+            # Рисуем прямоугольник
             cv2.rectangle(frame_copy, (x, y), (x + w, y + h), color, thickness)
             
-            # Добавляем номер лица (для отладки)
-            cv2.putText(frame_copy, f'Face #{i+1}', (x, y - 10),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
+            # Подготавливаем текст для отображения
+            if names and i < len(names):
+                name_text = names[i]
+                if confidence and i < len(confidence):
+                    name_text += f" ({confidence[i]:.2f})"
+                
+                # Рисуем фон для текста
+                text_size = cv2.getTextSize(name_text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)[0]
+                cv2.rectangle(frame_copy, 
+                             (x, y - 25), 
+                             (x + text_size[0] + 10, y), 
+                             color, 
+                             -1)
+                
+                # Рисуем текст
+                cv2.putText(frame_copy, name_text, (x + 5, y - 10),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+            else:
+                # Без имени - просто номер
+                cv2.putText(frame_copy, f'Face #{i+1}', (x, y - 10),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 1)
             
             # Рисуем точку в центре лица
             center_x = x + w // 2
             center_y = y + h // 2
-            cv2.circle(frame_copy, (center_x, center_y), 3, (0, 0, 255), -1)
+            cv2.circle(frame_copy, (center_x, center_y), 3, (255, 255, 0), -1)
         
         return frame_copy
+    
+    def get_face_regions(self) -> List[Tuple[int, int, int, int]]:
+        """Получение текущих регионов лиц"""
+        return self.face_regions
+    
+    def get_face_images(self) -> List[np.ndarray]:
+        """Получение текущих изображений лиц"""
+        return self.face_images
+    
+    def get_face_data(self) -> Dict:
+        """
+        Получение полных данных о текущих лицах
+        
+        Returns:
+            Словарь с данными о лицах
+        """
+        return {
+            'count': len(self.face_regions),
+            'regions': self.face_regions,
+            'images': self.face_images,
+            'timestamp': time.time(),
+            'frame_count': self.frame_count,
+            'total_detected': self.total_faces_detected
+        }
     
     def calculate_fps(self) -> float:
         """Расчет FPS (кадров в секунду)"""
@@ -136,57 +208,14 @@ class FaceDetector:
         
         return self.fps
     
-    def add_debug_info(self, frame: np.ndarray) -> np.ndarray:
-        """
-        Добавление отладочной информации на кадр
-        
-        Args:
-            frame: Входной кадр
-            
-        Returns:
-            Кадр с отладочной информацией
-        """
-        frame_copy = frame.copy()
-        
-        # Расчет FPS
-        fps = self.calculate_fps()
-        
-        # Добавляем информацию
-        info_lines = [
-            f"FPS: {fps:.1f}",
-            f"Faces: {len(self.face_regions)}",
-            f"Total detected: {self.total_faces_detected}",
-            "Press 'q' to quit",
-            "Press 's' to save face"
-        ]
-        
-        y_offset = 30
-        for line in info_lines:
-            cv2.putText(frame_copy, line, (10, y_offset),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 255, 255), 2)
-            y_offset += 25
-        
-        return frame_copy
-    
-    def get_face_data(self) -> dict:
-        """
-        Получение данных о текущих лицах для передачи участнику 3
-        
-        Returns:
-            Словарь с данными о лицах:
-            {
-                'count': количество лиц,
-                'regions': координаты лиц,
-                'images': изображения лиц,
-                'timestamp': время обнаружения
-            }
-        """
+    def get_statistics(self) -> Dict[str, any]:
+        """Получение статистики"""
         return {
-            'count': len(self.face_regions),
-            'regions': self.face_regions,
-            'images': self.face_images,
-            'timestamp': time.time(),
-            'frame_count': self.frame_count
+            'fps': self.calculate_fps(),
+            'current_faces': len(self.face_regions),
+            'total_faces': self.total_faces_detected,
+            'frame_count': self.frame_count,
+            'uptime': time.time() - self.start_time
         }
     
     def reset_statistics(self):
@@ -194,151 +223,178 @@ class FaceDetector:
         self.total_faces_detected = 0
         self.frame_count = 0
         self.start_time = time.time()
+    
+    def save_faces(self, output_dir: str = "detected_faces") -> List[str]:
+        """
+        Сохранение текущих лиц в файлы
+        
+        Args:
+            output_dir: Директория для сохранения
+            
+        Returns:
+            Список путей к сохраненным файлам
+        """
+        os.makedirs(output_dir, exist_ok=True)
+        saved_paths = []
+        
+        timestamp = time.strftime("%Y%m%d_%H%M%S")
+        
+        for i, face_img in enumerate(self.face_images):
+            if face_img is not None and face_img.size > 0:
+                filename = os.path.join(output_dir, f"face_{timestamp}_{i+1}.jpg")
+                cv2.imwrite(filename, face_img)
+                saved_paths.append(filename)
+        
+        return saved_paths
+    
+    def preprocess_for_recognition(self, face_image: np.ndarray) -> np.ndarray:
+        """
+        Предобработка изображения лица для распознавания
+        
+        Args:
+            face_image: Изображение лица
+            
+        Returns:
+            Предобработанное изображение
+        """
+        # Конвертация в оттенки серого
+        gray = cv2.cvtColor(face_image, cv2.COLOR_BGR2GRAY)
+        
+        # Нормализация
+        normalized = gray.astype('float32') / 255.0
+        
+        # Расширение размерности для нейронных сетей
+        if len(normalized.shape) == 2:
+            normalized = np.expand_dims(normalized, axis=-1)
+        
+        return normalized
 
-# ==================== ФУНКЦИИ ДЛЯ ЭКСПОРТА ====================
+# ==================== ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ ====================
 
-def run_face_detection(camera_id: int = 0, window_name: str = "Face Detector"):
+def create_detector(config: Dict = None) -> FaceDetector:
     """
-    Запуск обнаружения лиц с веб-камеры
+    Фабричная функция для создания детектора
     
     Args:
-        camera_id: ID камеры (0 - встроенная камера)
-        window_name: Название окна
+        config: Конфигурация детектора
+        
+    Returns:
+        Экземпляр FaceDetector
     """
-    # Инициализация детектора
-    detector = FaceDetector()
-    
-    # Открытие видеопотока
-    cap = cv2.VideoCapture(camera_id)
-    
-    if not cap.isOpened():
-        print(f"❌ Ошибка: не удалось открыть камеру {camera_id}")
-        return
-    
-    # Настройка параметров камеры (опционально)
-    cap.set(cv2.CAP_PROP_FRAME_WIDTH, 640)
-    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, 480)
-    cap.set(cv2.CAP_PROP_FPS, 30)
-    
-    print("🚀 Запуск обнаружения лиц...")
-    print("📌 Горячие клавиши:")
-    print("   'q' - выход")
-    print("   's' - сохранить текущие лица")
-    print("   'r' - сбросить статистику")
-    print("   'c' - сделать скриншот")
-    
-    while True:
-        # Захват кадра
-        ret, frame = cap.read()
-        if not ret:
-            print("❌ Ошибка при захвате кадра")
-            break
-        
-        # Обнаружение лиц
-        faces = detector.detect_faces(frame)
-        
-        # Рисование прямоугольников
-        frame_with_faces = detector.draw_faces(frame, faces)
-        
-        # Добавление отладочной информации
-        frame_with_info = detector.add_debug_info(frame_with_faces)
-        
-        # Получение данных для участника 3
-        face_data = detector.get_face_data()
-        
-        # Отображение результата
-        cv2.imshow(window_name, frame_with_info)
-        
-        # Обработка клавиш
-        key = cv2.waitKey(1) & 0xFF
-        
-        if key == ord('q'):  # Выход
-            break
-        elif key == ord('s'):  # Сохранение лиц
-            save_detected_faces(detector)
-        elif key == ord('r'):  # Сброс статистики
-            detector.reset_statistics()
-            print("📊 Статистика сброшена")
-        elif key == ord('c'):  # Скриншот
-            timestamp = time.strftime("%Y%m%d_%H%M%S")
-            filename = f"screenshot_{timestamp}.jpg"
-            cv2.imwrite(filename, frame_with_info)
-            print(f"📸 Скриншот сохранен: {filename}")
-    
-    # Освобождение ресурсов
-    cap.release()
-    cv2.destroyAllWindows()
-    print("👋 Программа завершена")
+    if config and 'cascade_path' in config:
+        return FaceDetector(cascade_path=config['cascade_path'])
+    return FaceDetector()
 
-def save_detected_faces(detector: FaceDetector, save_dir: str = "detected_faces"):
+def test_detection_on_image(image_path: str, show_result: bool = True):
     """
-    Сохранение обнаруженных лиц в файлы
-    
-    Args:
-        detector: Объект детектора лиц
-        save_dir: Директория для сохранения
-    """
-    import os
-    
-    # Создание директории, если не существует
-    os.makedirs(save_dir, exist_ok=True)
-    
-    face_data = detector.get_face_data()
-    
-    if face_data['count'] == 0:
-        print("⚠️ Нет лиц для сохранения")
-        return
-    
-    # Сохранение каждого лица
-    timestamp = time.strftime("%Y%m%d_%H%M%S")
-    
-    for i, face_img in enumerate(face_data['images']):
-        if face_img is not None and face_img.size > 0:
-            filename = os.path.join(save_dir, f"face_{timestamp}_{i+1}.jpg")
-            cv2.imwrite(filename, face_img)
-            print(f"💾 Лицо #{i+1} сохранено: {filename}")
-
-def test_with_image(image_path: str):
-    """
-    Тестирование обнаружения лиц на изображении
+    Тестирование обнаружения на изображении
     
     Args:
         image_path: Путь к изображению
+        show_result: Показывать результат
     """
     detector = FaceDetector()
     
-    # Загрузка изображения
     image = cv2.imread(image_path)
     if image is None:
-        print(f"❌ Не удалось загрузить изображение: {image_path}")
+        print(f"Не удалось загрузить изображение: {image_path}")
         return
     
-    # Обнаружение лиц
     faces = detector.detect_faces(image)
     
-    # Рисование прямоугольников
-    result = detector.draw_faces(image, faces)
+    print(f"Обнаружено лиц: {len(faces)}")
     
-    # Добавление информации
-    result = detector.add_debug_info(result)
+    if show_result:
+        result = detector.draw_faces(image, faces)
+        cv2.imshow('Face Detection Test', result)
+        cv2.waitKey(0)
+        cv2.destroyAllWindows()
     
-    # Отображение результата
-    print(f"📊 Обнаружено лиц: {len(faces)}")
-    
-    cv2.imshow('Face Detection Test', result)
-    cv2.waitKey(0)
-    cv2.destroyAllWindows()
+    return faces
 
-# ==================== ТОЧКА ВХОДА ====================
+def benchmark_detector(detector: FaceDetector, test_frames: int = 100):
+    """
+    Бенчмарк производительности детектора
+    
+    Args:
+        detector: Детектор для тестирования
+        test_frames: Количество тестовых кадров
+    """
+    # Создаем тестовые кадры
+    test_frame = np.random.randint(0, 255, (480, 640, 3), dtype=np.uint8)
+    
+    start_time = time.time()
+    
+    for i in range(test_frames):
+        detector.detect_faces(test_frame)
+    
+    end_time = time.time()
+    
+    total_time = end_time - start_time
+    fps = test_frames / total_time
+    
+    print(f"Бенчмарк завершен:")
+    print(f"  Кадров: {test_frames}")
+    print(f"  Время: {total_time:.2f} сек")
+    print(f"  FPS: {fps:.2f}")
+    
+    return fps
+
+# ==================== ТОЧКА ВХОДА ДЛЯ ТЕСТИРОВАНИЯ ====================
 
 if __name__ == "__main__":
-    # Демонстрация работы модуля
     print("=" * 50)
-    print("🎭 Модуль обнаружения лиц (Участник 2)")
+    print("Тестирование модуля обнаружения лиц")
     print("=" * 50)
     
-    # Запуск с веб-камеры
-    run_face_detection()
+    # Тест 1: Создание детектора
+    print("\n1. Тестирование создания детектора...")
+    try:
+        detector = FaceDetector()
+        print("✅ Детектор создан успешно")
+    except Exception as e:
+        print(f"❌ Ошибка: {e}")
+        exit(1)
     
-    # Для тестирования на изображении раскомментируйте:
-    # test_with_image("test_image.jpg")
+    # Тест 2: Бенчмарк
+    print("\n2. Запуск бенчмарка производительности...")
+    fps = benchmark_detector(detector, 50)
+    
+    # Тест 3: Проверка работы с камерой
+    print("\n3. Тестирование с веб-камерой (5 секунд)...")
+    
+    cap = cv2.VideoCapture(0)
+    if not cap.isOpened():
+        print("❌ Не удалось открыть камеру")
+    else:
+        start = time.time()
+        while time.time() - start < 5:
+            ret, frame = cap.read()
+            if ret:
+                faces = detector.detect_faces(frame)
+                frame_with_faces = detector.draw_faces(frame, faces)
+                cv2.imshow('Test Camera', frame_with_faces)
+                if cv2.waitKey(1) & 0xFF == ord('q'):
+                    break
+        
+        cap.release()
+        cv2.destroyAllWindows()
+        print("✅ Тест с камерой завершен")
+    
+    print("\n" + "=" * 50)
+    print("Все тесты завершены")
+    print("=" * 50)
+
+from face_detector import FaceDetector, create_detector
+
+# Создание детектора
+detector = FaceDetector()
+
+# Использование
+while True:
+    ret, frame = cap.read()
+    faces = detector.detect_faces(frame)
+    frame_with_faces = detector.draw_faces(frame, faces)
+    
+    # Получение данных для распознавания
+    face_data = detector.get_face_data()
